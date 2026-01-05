@@ -1,0 +1,51 @@
+# H4L Analysis Configuration
+# ==========================
+# Configuration for the CMS H->4l Open Data analysis reproduction
+
+upstream:
+  # URL of the upstream CMS Open Data example repository
+  repo_url: "https://github.com/cms-opendata-analyses/HiggsExample20112012.git"
+  # Pinned commit hash for reproducibility (optional, uses HEAD if not set)
+  # To get latest: leave empty or set to null
+  pinned_commit: null
+  # Local path where upstream will be cloned (relative to project root)
+  local_path: "third_party/upstream"
+
+paths:
+  # Output directories (relative to project root)
+  outputs:
+    level2: "outputs/level2"
+    level3: "outputs/level3"
+  # Log directory
+  logs: "logs"
+  # Third-party/cache directory
+  third_party: "third_party"
+
+level2:
+  # ROOT macro filename in upstream Level2 directory
+  macro_name: "M4Lnormdatall.cc"
+  # Output plot filename (as produced by the macro)
+  output_plot: "mass4l_combine_user.pdf"
+  # Renamed output in our outputs directory
+  final_plot_name: "m4l_level2.pdf"
+
+level3:
+  # Docker image for CMSSW
+  docker_image: "cmsopendata/cmssw_5_3_32"
+  # CMSSW version
+  cmssw_version: "CMSSW_5_3_32"
+  # Config files in upstream Level3 directory
+  data_config: "demoanalyzer_cfg_level3data.py"
+  mc_config: "demoanalyzer_cfg_level3MC.py"
+  # ROOT macro for Level3
+  macro_name: "M4Lnormdatall_lvl3.cc"
+  # Output plot filename
+  output_plot: "mass4l_combine_userlvl3.pdf"
+  # Renamed output in our outputs directory
+  final_plot_name: "m4l_level3.pdf"
+
+metadata:
+  # Fields to include in run_metadata.json
+  include_host_info: true
+  include_timestamps: true
+  include_commands: true
