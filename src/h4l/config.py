@@ -98,6 +98,26 @@ def find_project_root(start_path: Path | None = None) -> Path:
     return start_path.resolve()
 
 
+def _get_required_key(data: dict[str, Any], *keys: str, config_path: Path) -> Any:
+    """Get a required key from nested dict, raising ValueError with clear message if missing."""
+    current = data
+    path_parts: list[str] = []
+    for key in keys:
+        path_parts.append(key)
+        if not isinstance(current, dict):
+            raise ValueError(
+                f"Configuration error in {config_path}: "
+                f"Expected '{'.'.join(path_parts[:-1])}' to be a section, got {type(current).__name__}"
+            )
+        if key not in current:
+            raise ValueError(
+                f"Configuration error in {config_path}: "
+                f"Missing required key '{'.'.join(path_parts)}'"
+            )
+        current = current[key]
+    return current
+
+
 def load_config(config_path: Path | None = None, project_root: Path | None = None) -> Config:
     """Load configuration from YAML file.
 
@@ -110,7 +130,7 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
 
     Raises:
         FileNotFoundError: If config file doesn't exist.
-        ValueError: If config file is invalid.
+        ValueError: If config file is invalid or missing required keys.
     """
     if project_root is None:
         project_root = find_project_root()
@@ -127,9 +147,16 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
     if data is None:
         raise ValueError(f"Empty configuration file: {config_path}")
 
+    # Validate required sections exist
+    for section in ["upstream", "level2", "level3"]:
+        if section not in data:
+            raise ValueError(
+                f"Configuration error in {config_path}: Missing required section '{section}'"
+            )
+
     upstream = UpstreamConfig(
-        repo_url=data["upstream"]["repo_url"],
-        local_path=data["upstream"]["local_path"],
+        repo_url=_get_required_key(data, "upstream", "repo_url", config_path=config_path),
+        local_path=_get_required_key(data, "upstream", "local_path", config_path=config_path),
         pinned_commit=data["upstream"].get("pinned_commit"),
     )
 
@@ -140,22 +167,20 @@ def load_config(config_path: Path | None = None, project_root: Path | None = Non
         third_party=paths_data.get("third_party", "third_party"),
     )
 
-    level2_data = data["level2"]
     level2 = Level2Config(
-        macro_name=level2_data["macro_name"],
-        output_plot=level2_data["output_plot"],
-        final_plot_name=level2_data["final_plot_name"],
+        macro_name=_get_required_key(data, "level2", "macro_name", config_path=config_path),
+        output_plot=_get_required_key(data, "level2", "output_plot", config_path=config_path),
+        final_plot_name=_get_required_key(data, "level2", "final_plot_name", config_path=config_path),
     )
 
-    level3_data = data["level3"]
     level3 = Level3Config(
-        docker_image=level3_data["docker_image"],
-        cmssw_version=level3_data["cmssw_version"],
-        data_config=level3_data["data_config"],
-        mc_config=level3_data["mc_config"],
-        macro_name=level3_data["macro_name"],
-        output_plot=level3_data["output_plot"],
-        final_plot_name=level3_data["final_plot_name"],
+        docker_image=_get_required_key(data, "level3", "docker_image", config_path=config_path),
+        cmssw_version=_get_required_key(data, "level3", "cmssw_version", config_path=config_path),
+        data_config=_get_required_key(data, "level3", "data_config", config_path=config_path),
+        mc_config=_get_required_key(data, "level3", "mc_config", config_path=config_path),
+        macro_name=_get_required_key(data, "level3", "macro_name", config_path=config_path),
+        output_plot=_get_required_key(data, "level3", "output_plot", config_path=config_path),
+        final_plot_name=_get_required_key(data, "level3", "final_plot_name", config_path=config_path),
     )
 
     metadata_data = data.get("metadata", {})

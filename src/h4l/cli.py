@@ -44,12 +44,42 @@ def get_config() -> Config:
         raise typer.Exit(1)
 
 
+class CommandResult:
+    """Result from running a shell command."""
+
+    def __init__(
+        self,
+        command: list[str],
+        returncode: int,
+        stdout: str | None = None,
+        stderr: str | None = None,
+    ):
+        self.command = command
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+    @property
+    def command_str(self) -> str:
+        """Get command as a string."""
+        return " ".join(self.command)
+
+
 def run_command(
     cmd: list[str],
     cwd: Path | None = None,
     capture: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    """Run a shell command with proper error handling."""
+) -> CommandResult:
+    """Run a shell command with proper error handling.
+
+    Args:
+        cmd: Command and arguments to execute.
+        cwd: Working directory for the command.
+        capture: If True, capture stdout/stderr for later use.
+
+    Returns:
+        CommandResult with command info and captured output if requested.
+    """
     try:
         result = subprocess.run(
             cmd,
@@ -58,7 +88,12 @@ def run_command(
             capture_output=capture,
             text=True,
         )
-        return result
+        return CommandResult(
+            command=cmd,
+            returncode=result.returncode,
+            stdout=result.stdout if capture else None,
+            stderr=result.stderr if capture else None,
+        )
     except subprocess.CalledProcessError as e:
         console.print(f"[red]Command failed:[/red] {' '.join(cmd)}")
         if e.stderr:
@@ -283,24 +318,28 @@ def _run_level2(config: Config, dry_run: bool, save_metadata: bool) -> None:
     console.print(f"[blue]Macro:[/blue] {macro_path}")
     console.print(f"[blue]Output:[/blue] {output_dir}")
 
+    # Prepare command
+    root_cmd = ["root", "-l", "-b", "-q", config.level2.macro_name]
+
     if dry_run:
         console.print("\n[yellow]Dry run - commands that would be executed:[/yellow]")
         console.print(f"  cd {level2_dir}")
-        console.print(f"  root -l -b -q {config.level2.macro_name}")
+        console.print(f"  {' '.join(root_cmd)}")
         console.print(f"  cp {config.level2.output_plot} {output_dir / config.level2.final_plot_name}")
         return
 
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Track executed commands for metadata
+    executed_commands: list[str] = []
+
     # Run ROOT macro
     console.print("\n[blue]Running ROOT macro...[/blue]")
     start_time = datetime.datetime.now()
 
-    run_command(
-        ["root", "-l", "-b", "-q", config.level2.macro_name],
-        cwd=level2_dir,
-    )
+    result = run_command(root_cmd, cwd=level2_dir)
+    executed_commands.append(result.command_str)
 
     end_time = datetime.datetime.now()
 
@@ -311,18 +350,25 @@ def _run_level2(config: Config, dry_run: bool, save_metadata: bool) -> None:
     if src_plot.exists():
         shutil.copy2(src_plot, dst_plot)
         console.print(f"[green]✓[/green] Output saved to: {dst_plot}")
+        executed_commands.append(f"cp {src_plot} {dst_plot}")
     else:
         console.print(f"[yellow]Warning:[/yellow] Expected output not found: {src_plot}")
 
     # Save metadata
     if save_metadata:
-        _save_metadata(config, "level2", start_time, end_time, output_dir)
+        _save_metadata(config, "level2", start_time, end_time, output_dir, executed_commands)
 
     console.print("\n[green]✓[/green] Level 2 analysis complete!")
 
 
 def _run_level3(config: Config, dry_run: bool, save_metadata: bool) -> None:
-    """Run Level 3 analysis using Docker and CMSSW."""
+    """Run Level 3 analysis using Docker and CMSSW.
+
+    This runs the complete Level 3 analysis which includes:
+    1. Running the data analysis configuration
+    2. Running the Monte Carlo analysis configuration
+    3. Running the ROOT macro to combine and plot results
+    """
     upstream_path = config.get_upstream_path()
     level3_dir = upstream_path / "Level3"
     output_dir = config.get_output_path("level3")
@@ -340,32 +386,71 @@ def _run_level3(config: Config, dry_run: bool, save_metadata: bool) -> None:
 
     console.print(f"[blue]Docker image:[/blue] {config.level3.docker_image}")
     console.print(f"[blue]CMSSW version:[/blue] {config.level3.cmssw_version}")
+    console.print(f"[blue]Data config:[/blue] {config.level3.data_config}")
+    console.print(f"[blue]MC config:[/blue] {config.level3.mc_config}")
+    console.print(f"[blue]Macro:[/blue] {config.level3.macro_name}")
     console.print(f"[blue]Output:[/blue] {output_dir}")
 
-    # Build docker command
-    docker_cmd = [
+    # Build docker base command parts
+    docker_base = [
         "docker", "run", "--rm",
         "-v", f"{level3_dir}:/work",
         "-w", "/work",
         config.level3.docker_image,
         "/bin/bash", "-c",
-        f"source /opt/cms/cmsset_default.sh && cmsRun {config.level3.data_config}",
     ]
+
+    # Command for data analysis
+    data_script = f"source /opt/cms/cmsset_default.sh && cmsRun {config.level3.data_config}"
+    docker_cmd_data = docker_base + [data_script]
+
+    # Command for MC analysis
+    mc_script = f"source /opt/cms/cmsset_default.sh && cmsRun {config.level3.mc_config}"
+    docker_cmd_mc = docker_base + [mc_script]
+
+    # Command for running ROOT macro to combine results
+    macro_script = f"source /opt/cms/cmsset_default.sh && root -l -b -q {config.level3.macro_name}"
+    docker_cmd_macro = docker_base + [macro_script]
 
     if dry_run:
         console.print("\n[yellow]Dry run - commands that would be executed:[/yellow]")
-        console.print(f"  {' '.join(docker_cmd)}")
+        console.print("\n  [bold]Step 1: Data analysis[/bold]")
+        console.print(f"  {' '.join(docker_cmd_data)}")
+        console.print("\n  [bold]Step 2: Monte Carlo analysis[/bold]")
+        console.print(f"  {' '.join(docker_cmd_mc)}")
+        console.print("\n  [bold]Step 3: Combine results with ROOT macro[/bold]")
+        console.print(f"  {' '.join(docker_cmd_macro)}")
+        console.print(f"\n  [bold]Step 4: Copy output[/bold]")
+        console.print(f"  cp {config.level3.output_plot} {output_dir / config.level3.final_plot_name}")
         return
 
     # Ensure output directory exists
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Run Docker container
-    console.print("\n[blue]Running CMSSW analysis in Docker...[/blue]")
+    # Track executed commands for metadata
+    executed_commands: list[str] = []
+
+    console.print("\n[blue]Running Level 3 CMSSW analysis in Docker...[/blue]")
     console.print("[dim]This may take a while on first run (downloading Docker image)...[/dim]")
     start_time = datetime.datetime.now()
 
-    run_command(docker_cmd, cwd=config.project_root)
+    # Step 1: Run data analysis
+    console.print("\n[bold cyan]Step 1/3:[/bold cyan] Running data analysis...")
+    result = run_command(docker_cmd_data, cwd=config.project_root)
+    executed_commands.append(result.command_str)
+    console.print("[green]✓[/green] Data analysis complete")
+
+    # Step 2: Run MC analysis
+    console.print("\n[bold cyan]Step 2/3:[/bold cyan] Running Monte Carlo analysis...")
+    result = run_command(docker_cmd_mc, cwd=config.project_root)
+    executed_commands.append(result.command_str)
+    console.print("[green]✓[/green] Monte Carlo analysis complete")
+
+    # Step 3: Run ROOT macro to combine results
+    console.print("\n[bold cyan]Step 3/3:[/bold cyan] Running ROOT macro to combine results...")
+    result = run_command(docker_cmd_macro, cwd=config.project_root)
+    executed_commands.append(result.command_str)
+    console.print("[green]✓[/green] ROOT macro complete")
 
     end_time = datetime.datetime.now()
 
@@ -376,12 +461,13 @@ def _run_level3(config: Config, dry_run: bool, save_metadata: bool) -> None:
     if src_plot.exists():
         shutil.copy2(src_plot, dst_plot)
         console.print(f"[green]✓[/green] Output saved to: {dst_plot}")
+        executed_commands.append(f"cp {src_plot} {dst_plot}")
     else:
         console.print(f"[yellow]Warning:[/yellow] Expected output not found: {src_plot}")
 
     # Save metadata
     if save_metadata:
-        _save_metadata(config, "level3", start_time, end_time, output_dir)
+        _save_metadata(config, "level3", start_time, end_time, output_dir, executed_commands)
 
     console.print("\n[green]✓[/green] Level 3 analysis complete!")
 
@@ -392,8 +478,18 @@ def _save_metadata(
     start_time: datetime.datetime,
     end_time: datetime.datetime,
     output_dir: Path,
+    commands: list[str] | None = None,
 ) -> None:
-    """Save run metadata to JSON file."""
+    """Save run metadata to JSON file.
+
+    Args:
+        config: Configuration object.
+        level: Analysis level (level2 or level3).
+        start_time: When the analysis started.
+        end_time: When the analysis ended.
+        output_dir: Directory to save metadata file.
+        commands: List of commands that were executed (optional).
+    """
     metadata: dict[str, object] = {
         "level": level,
         "h4l_version": __version__,
@@ -413,10 +509,18 @@ def _save_metadata(
             "python_version": platform.python_version(),
         }
 
+    if config.metadata.include_commands and commands:
+        metadata["commands"] = commands
+
     metadata_path = output_dir / "run_metadata.json"
-    with open(metadata_path, "w") as f:
-        json.dump(metadata, f, indent=2)
-    console.print(f"[dim]Metadata saved to: {metadata_path}[/dim]")
+    try:
+        with open(metadata_path, "w") as f:
+            json.dump(metadata, f, indent=2)
+        console.print(f"[dim]Metadata saved to: {metadata_path}[/dim]")
+    except PermissionError:
+        console.print(f"[yellow]Warning:[/yellow] Permission denied writing metadata to {metadata_path}")
+    except OSError as e:
+        console.print(f"[yellow]Warning:[/yellow] Failed to save metadata: {e}")
 
 
 @app.command()
@@ -475,13 +579,25 @@ def clean(
             console.print("[yellow]Aborted.[/yellow]")
             raise typer.Exit(0)
 
-    # Delete targets
+    # Delete targets with error handling
+    failed: list[str] = []
     for name, path in targets:
-        if path.is_dir():
-            shutil.rmtree(path)
-        else:
-            path.unlink()
-        console.print(f"[green]✓[/green] Removed {name}")
+        try:
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            console.print(f"[green]✓[/green] Removed {name}")
+        except PermissionError:
+            console.print(f"[red]✗[/red] Permission denied: {name} ({path})")
+            failed.append(name)
+        except OSError as e:
+            console.print(f"[red]✗[/red] Failed to remove {name}: {e}")
+            failed.append(name)
+
+    if failed:
+        console.print(f"\n[yellow]Warning:[/yellow] Failed to remove {len(failed)} item(s)")
+        raise typer.Exit(1)
 
     console.print("\n[green]✓[/green] Clean complete!")
 
